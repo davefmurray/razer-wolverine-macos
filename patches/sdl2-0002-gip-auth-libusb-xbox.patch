@@ -1,0 +1,597 @@
+diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/hidapi/SDL_hidapi.c build/SDL2-src-x86_64/src/hidapi/SDL_hidapi.c
+--- a/src/hidapi/SDL_hidapi.c	2025-08-30 05:47:40
++++ b/src/hidapi/SDL_hidapi.c	2026-09-07 12:39:25
+@@ -1274,7 +1274,11 @@
+ #endif
+         for (usb_dev = usb_devs; usb_dev; usb_dev = usb_dev->next) {
+             if (use_libusb_whitelist) {
+-                if (!IsInWhitelist(usb_dev->vendor_id, usb_dev->product_id)) {
++                /* Xbox 360/One vendor-class interfaces have no OS driver on macOS, so libusb can
++                   always open them: treat them as whitelisted. */
++                SDL_bool xbox_class = (usb_dev->interface_class == 0xFF &&
++                                       (usb_dev->interface_subclass == 0x47 || usb_dev->interface_subclass == 0x5D));
++                if (!xbox_class && !IsInWhitelist(usb_dev->vendor_id, usb_dev->product_id)) {
+ #ifdef DEBUG_HIDAPI
+                     SDL_Log("Device was not in libusb whitelist: %ls %ls 0x%.4hx 0x%.4hx",
+                             usb_dev->manufacturer_string, usb_dev->product_string,
+diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hidapi/SDL_hidapi_gipauth.c build/SDL2-src-x86_64/src/joystick/hidapi/SDL_hidapi_gipauth.c
+--- a/src/joystick/hidapi/SDL_hidapi_gipauth.c	1969-12-31 16:00:00
++++ b/src/joystick/hidapi/SDL_hidapi_gipauth.c	2026-09-07 12:39:43
+@@ -0,0 +1,382 @@
++/* See SDL_hidapi_gipauth.h. Auth engine ported from medusalix/xone auth/auth.c (GPL-2.0-or-later,
++ * (C) 2023 Severin von Wnuck-Lipinski); chunk transport per xone bus/protocol.c and MS-GIPUSB. */
++#include "../../SDL_internal.h"
++#include "SDL_hidapijoystick_c.h"   /* defines SDL_JOYSTICK_HIDAPI_XBOXONE */
++#include "SDL_hidapi_gipauth.h"
++
++#ifdef SDL_HIDAPI_GIP_AUTH
++#include <stdint.h>
++#include <string.h>
++#include <stdlib.h>
++#include <CommonCrypto/CommonDigest.h>
++#include <CommonCrypto/CommonHMAC.h>
++#include <Security/Security.h>
++#include <CoreFoundation/CoreFoundation.h>
++
++typedef struct gip_auth gip_auth_t;
++#define TRAILER_LEN 8
++#define RANDOM_LEN 32
++#define CERT_MAX_LEN 1024
++#define PUBKEY_LEN 270
++#define SECRET_LEN 48
++#define ENC_PMS_LEN 256
++#define TRANSCRIPT_LEN 32
++#define SESSION_KEY_LEN 16
++#define AUTH2_PUBKEY_LEN 64
++#define AUTH2_SECRET_LEN 32
++
++enum { CTX_HANDSHAKE = 0x00, CTX_CONTROL = 0x01 };
++enum { CMD_HOST_HELLO = 0x01, CMD_CLIENT_HELLO = 0x02, CMD_CLIENT_CERT = 0x03, CMD_HOST_SECRET = 0x05, CMD_HOST_FINISH = 0x07, CMD_CLIENT_FINISH = 0x08,
++       CMD2_HOST_HELLO = 0x21, CMD2_CLIENT_HELLO = 0x22, CMD2_CLIENT_CERT = 0x23, CMD2_CLIENT_PUBKEY = 0x24, CMD2_HOST_PUBKEY = 0x25, CMD2_HOST_FINISH = 0x26, CMD2_CLIENT_FINISH = 0x27 };
++enum { CTRL_COMPLETE = 0x00, CTRL_RESET = 0x01 };
++enum { OPT_ACKNOWLEDGE = 1, OPT_REQUEST = 2, OPT_FROM_HOST = 0x40, OPT_FROM_CLIENT = 0xC0 };
++
++#pragma pack(push, 1)
++typedef struct { uint8_t context, options, error, command; uint8_t length_be[2]; } hdr_hs_t;   /* 6 */
++typedef struct { uint8_t command, version; uint8_t length_be[2]; } hdr_data_t;                  /* 4 */
++typedef struct { hdr_hs_t hs; hdr_data_t data; } hdr_full_t;                                     /* 10 */
++#pragma pack(pop)
++
++struct gip_auth {
++    GIP_WriteFn write; /* unused here, set by transport */ int (*send)(void *user, const uint8_t *payload, int len, int need_ack); void *user;
++    CC_SHA256_CTX transcript;
++    uint8_t last_sent;
++    uint8_t random_host[RANDOM_LEN], random_client[RANDOM_LEN];
++    uint8_t pubkey_client[PUBKEY_LEN];
++    uint8_t pubkey_client2[AUTH2_PUBKEY_LEN];
++    uint8_t master_secret[SECRET_LEN];
++    int complete, failed, v2;
++};
++
++static void be16(uint8_t *p, uint16_t v) { p[0] = v >> 8; p[1] = v & 0xff; }
++static uint16_t rd16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
++
++static int transcript_get(gip_auth_t *a, uint8_t out[32]) {
++    CC_SHA256_CTX c = a->transcript;   /* copy so the running hash continues */
++    CC_SHA256_Final(out, &c); return 0;
++}
++static void transcript_update(gip_auth_t *a, const void *d, size_t n) { CC_SHA256_Update(&a->transcript, d, (CC_LONG)n); }
++static void transcript_reset(gip_auth_t *a) { CC_SHA256_Init(&a->transcript); }
++static void hmac256(const uint8_t *key, int key_len, const uint8_t *d1, int l1, const uint8_t *d2, int l2, uint8_t out[32]) {
++    CCHmacContext c; CCHmacInit(&c, kCCHmacAlgSHA256, key, key_len);
++    if (l1) CCHmacUpdate(&c, d1, l1); if (l2) CCHmacUpdate(&c, d2, l2); CCHmacFinal(&c, out);
++}
++static void random_bytes(uint8_t *b, int n) { arc4random_buf(b, n); }
++
++/* TLS-1.2-style P_SHA256: A(1)=HMAC(label||seed); out_i = HMAC(A(i)||label||seed); A(i+1)=HMAC(A(i)) */
++static int compute_prf(const char *label, const uint8_t *key, int key_len, const uint8_t *seed, int seed_len, uint8_t *out, int out_len) {
++    uint8_t A[32], blk[32];
++    int ll = (int)strlen(label);
++    uint8_t *ls = malloc(ll + seed_len); memcpy(ls, label, ll); memcpy(ls + ll, seed, seed_len);
++    int ls_len = ll + seed_len;
++    hmac256(key, key_len, ls, ls_len, NULL, 0, A);
++    while (out_len > 0) {
++        hmac256(key, key_len, A, 32, ls, ls_len, blk);
++        int c = out_len < 32 ? out_len : 32; memcpy(out, blk, c); out += c; out_len -= c;
++        hmac256(key, key_len, A, 32, NULL, 0, A);
++    }
++    free(ls); return 0;
++}
++
++static int send_pkt(gip_auth_t *a, uint8_t cmd, uint8_t *pkt, int len) {
++    hdr_full_t *h = (hdr_full_t *)pkt;
++    uint16_t data_len = len - sizeof(hdr_hs_t) - TRAILER_LEN;
++    h->hs.context = CTX_HANDSHAKE; h->hs.options = OPT_ACKNOWLEDGE | OPT_FROM_HOST; h->hs.error = 0; h->hs.command = cmd; be16(h->hs.length_be, data_len);
++    h->data.command = cmd; h->data.version = cmd >= CMD2_HOST_HELLO ? 2 : 1; be16(h->data.length_be, data_len - sizeof(hdr_data_t));
++    a->last_sent = cmd;
++    transcript_update(a, pkt + sizeof(hdr_hs_t), data_len);
++    return a->send(a->user, pkt, len, 1);
++}
++
++static int request_pkt(gip_auth_t *a, uint8_t cmd, uint16_t len) {
++    uint8_t req[sizeof(hdr_hs_t) + TRAILER_LEN] = {0}; hdr_hs_t *h = (hdr_hs_t *)req;
++    h->context = CTX_HANDSHAKE; h->options = OPT_REQUEST | OPT_FROM_HOST; h->command = cmd; be16(h->length_be, len + sizeof(hdr_data_t));
++    return a->send(a->user, req, sizeof req, 1);
++}
++
++static int send_hello(gip_auth_t *a) {
++    uint8_t pkt[sizeof(hdr_full_t) + RANDOM_LEN + 4 + 4 + TRAILER_LEN] = {0};
++    random_bytes(a->random_host, RANDOM_LEN); memcpy(pkt + sizeof(hdr_full_t), a->random_host, RANDOM_LEN);
++    return send_pkt(a, CMD_HOST_HELLO, pkt, sizeof pkt);
++}
++static int send_hello2(gip_auth_t *a) {
++    uint8_t pkt[sizeof(hdr_full_t) + RANDOM_LEN + 4 + TRAILER_LEN] = {0};
++    random_bytes(a->random_host, RANDOM_LEN); memcpy(pkt + sizeof(hdr_full_t), a->random_host, RANDOM_LEN);
++    return send_pkt(a, CMD2_HOST_HELLO, pkt, sizeof pkt);
++}
++
++static int send_finish(gip_auth_t *a, uint8_t cmd) {
++    uint8_t pkt[sizeof(hdr_full_t) + TRANSCRIPT_LEN + TRAILER_LEN] = {0}, tr[32];
++    if (transcript_get(a, tr)) return -1;
++    if (compute_prf("Host Finished", a->master_secret, SECRET_LEN, tr, 32, pkt + sizeof(hdr_full_t), TRANSCRIPT_LEN)) return -1;
++    return send_pkt(a, cmd, pkt, sizeof pkt);
++}
++
++static int exchange_rsa(gip_auth_t *a) {
++    uint8_t randoms[RANDOM_LEN * 2], pms[SECRET_LEN];
++    uint8_t pkt[sizeof(hdr_full_t) + ENC_PMS_LEN + TRAILER_LEN] = {0};
++    memcpy(randoms, a->random_host, RANDOM_LEN); memcpy(randoms + RANDOM_LEN, a->random_client, RANDOM_LEN);
++    random_bytes(pms, SECRET_LEN);
++    CFErrorRef err = NULL;
++    CFDataRef der = CFDataCreate(NULL, a->pubkey_client, PUBKEY_LEN);
++    const void *ak[] = { kSecAttrKeyType, kSecAttrKeyClass }; const void *av[] = { kSecAttrKeyTypeRSA, kSecAttrKeyClassPublic };
++    CFDictionaryRef attrs = CFDictionaryCreate(NULL, ak, av, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    SecKeyRef pk = SecKeyCreateWithData(der, attrs, &err);
++    CFRelease(der); CFRelease(attrs);
++    if (!pk) { SDL_Log("auth: cannot parse RSA public key"); if (err) CFRelease(err); return -1; }
++    CFDataRef plain = CFDataCreate(NULL, pms, SECRET_LEN);
++    CFDataRef enc = SecKeyCreateEncryptedData(pk, kSecKeyAlgorithmRSAEncryptionPKCS1, plain, &err);
++    CFRelease(plain); CFRelease(pk);
++    if (!enc || CFDataGetLength(enc) != ENC_PMS_LEN) { SDL_Log("auth: RSA encrypt failed"); if (enc) CFRelease(enc); if (err) CFRelease(err); return -1; }
++    memcpy(pkt + sizeof(hdr_full_t), CFDataGetBytePtr(enc), ENC_PMS_LEN); CFRelease(enc);
++    if (compute_prf("Master Secret", pms, SECRET_LEN, randoms, sizeof randoms, a->master_secret, SECRET_LEN)) return -1;
++    return send_pkt(a, CMD_HOST_SECRET, pkt, sizeof pkt);
++}
++
++static int exchange_ecdh(gip_auth_t *a) {
++    uint8_t randoms[RANDOM_LEN * 2], secret[32], secret_hash[32];
++    uint8_t pkt[sizeof(hdr_full_t) + AUTH2_PUBKEY_LEN + TRAILER_LEN] = {0};
++    memcpy(randoms, a->random_host, RANDOM_LEN); memcpy(randoms + RANDOM_LEN, a->random_client, RANDOM_LEN);
++    CFErrorRef err = NULL;
++    int bits = 256; CFNumberRef nbits = CFNumberCreate(NULL, kCFNumberIntType, &bits);
++    const void *gk[] = { kSecAttrKeyType, kSecAttrKeySizeInBits }; const void *gv[] = { kSecAttrKeyTypeECSECPrimeRandom, nbits };
++    CFDictionaryRef gattrs = CFDictionaryCreate(NULL, gk, gv, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    SecKeyRef priv = SecKeyCreateRandomKey(gattrs, &err); CFRelease(gattrs);
++    if (!priv) { SDL_Log("auth: EC keygen failed"); return -1; }
++    SecKeyRef pub = SecKeyCopyPublicKey(priv);
++    CFDataRef pubdata = SecKeyCopyExternalRepresentation(pub, &err);
++    if (!pubdata || CFDataGetLength(pubdata) != 65 || CFDataGetBytePtr(pubdata)[0] != 0x04) { SDL_Log("auth: unexpected own EC pubkey encoding"); return -1; }
++    memcpy(pkt + sizeof(hdr_full_t), CFDataGetBytePtr(pubdata) + 1, 64); CFRelease(pubdata); CFRelease(pub);
++    uint8_t peer_oct[65]; peer_oct[0] = 0x04; memcpy(peer_oct + 1, a->pubkey_client2, 64);
++    CFDataRef peerdata = CFDataCreate(NULL, peer_oct, 65);
++    const void *pk_[] = { kSecAttrKeyType, kSecAttrKeyClass, kSecAttrKeySizeInBits }; const void *pv_[] = { kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyClassPublic, nbits };
++    CFDictionaryRef pattrs = CFDictionaryCreate(NULL, pk_, pv_, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    SecKeyRef peer = SecKeyCreateWithData(peerdata, pattrs, &err); CFRelease(peerdata); CFRelease(pattrs); CFRelease(nbits);
++    if (!peer) { SDL_Log("auth: bad peer EC pubkey"); return -1; }
++    CFDictionaryRef params = CFDictionaryCreate(NULL, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    CFDataRef shared = SecKeyCopyKeyExchangeResult(priv, kSecKeyAlgorithmECDHKeyExchangeStandard, peer, params, &err);
++    CFRelease(params); CFRelease(peer); CFRelease(priv);
++    if (!shared || CFDataGetLength(shared) != 32) { SDL_Log("auth: ECDH derive failed"); if (shared) CFRelease(shared); return -1; }
++    memcpy(secret, CFDataGetBytePtr(shared), 32); CFRelease(shared);
++    CC_SHA256(secret, 32, secret_hash);
++    if (compute_prf("Master Secret", secret_hash, 32, randoms, sizeof randoms, a->master_secret, SECRET_LEN)) return -1;
++    return send_pkt(a, CMD2_HOST_PUBKEY, pkt, sizeof pkt);
++}
++
++static int send_complete(gip_auth_t *a) {
++    uint8_t ctrl[2] = { CTX_CONTROL, CTRL_COMPLETE };
++    a->complete = 1;
++    uint8_t randoms[RANDOM_LEN * 2], key[SESSION_KEY_LEN];
++    memcpy(randoms, a->random_host, RANDOM_LEN); memcpy(randoms + RANDOM_LEN, a->random_client, RANDOM_LEN);
++    compute_prf("EXPORTER DAWN data channel session key for controller", a->master_secret, SECRET_LEN, randoms, sizeof randoms, key, SESSION_KEY_LEN);
++    SDL_Log("auth: handshake complete (session key derived)");
++    return a->send(a->user, ctrl, sizeof ctrl, 0);
++}
++
++static int handle_ack(gip_auth_t *a) {
++    switch (a->last_sent) {
++    case CMD2_HOST_HELLO:  return request_pkt(a, CMD2_CLIENT_HELLO, RANDOM_LEN + 108 + 32);
++    case CMD2_HOST_PUBKEY: return send_finish(a, CMD2_HOST_FINISH);
++    case CMD2_HOST_FINISH: return request_pkt(a, CMD2_CLIENT_FINISH, TRANSCRIPT_LEN + 32);
++    case CMD_HOST_HELLO:   return request_pkt(a, CMD_CLIENT_HELLO, RANDOM_LEN + 48);
++    case CMD_HOST_SECRET:  return send_finish(a, CMD_HOST_FINISH);
++    case CMD_HOST_FINISH:  return request_pkt(a, CMD_CLIENT_FINISH, TRANSCRIPT_LEN + 32);
++    default: SDL_Log("auth: unexpected ack for 0x%02x", a->last_sent); return -1;
++    }
++}
++
++static int handle_finish(gip_auth_t *a, const uint8_t *d, int len) {
++    uint8_t tr[32], fin[32];
++    if (len < TRANSCRIPT_LEN + 32) return -1;
++    if (transcript_get(a, tr)) return -1;
++    if (compute_prf("Device Finished", a->master_secret, SECRET_LEN, tr, 32, fin, 32)) return -1;
++    if (memcmp(d, fin, 32)) { SDL_Log("auth: transcript mismatch (device finished)"); a->failed = 1; return -1; }
++    return send_complete(a);
++}
++
++static int dispatch(gip_auth_t *a, uint8_t cmd, const uint8_t *d, int len) {
++    switch (cmd) {
++    case CMD2_CLIENT_HELLO:
++        if (len < RANDOM_LEN + 108 + 32) return -1;
++        memcpy(a->random_client, d, RANDOM_LEN);
++        return request_pkt(a, CMD2_CLIENT_CERT, 4 + 136 + 32 + 20 + 576);
++    case CMD2_CLIENT_CERT:
++        if (len >= 4 + 136 + 32 + 20) SDL_Log("auth2: cert header=%.4s chip=%.32s rev=%.20s", (const char *)d, (const char *)d + 140, (const char *)d + 172);
++        return request_pkt(a, CMD2_CLIENT_PUBKEY, AUTH2_PUBKEY_LEN + 64);
++    case CMD2_CLIENT_PUBKEY:
++        if (len < AUTH2_PUBKEY_LEN + 64) return -1;
++        memcpy(a->pubkey_client2, d, AUTH2_PUBKEY_LEN);
++        return exchange_ecdh(a);
++    case CMD2_CLIENT_FINISH: return handle_finish(a, d, len);
++    case CMD_CLIENT_HELLO:
++        if (len < RANDOM_LEN + 48) return -1;
++        memcpy(a->random_client, d, RANDOM_LEN);
++        return request_pkt(a, CMD_CLIENT_CERT, CERT_MAX_LEN);
++    case CMD_CLIENT_CERT: {
++        static const uint8_t seq[] = { 0x30, 0x82, 0x01, 0x0a };
++        if (len > CERT_MAX_LEN) return -1;
++        for (int i = 0; i + 4 <= len; i++) {
++            if (memcmp(d + i, seq, 4)) continue;
++            if (i + PUBKEY_LEN > len) return -1;
++            memcpy(a->pubkey_client, d + i, PUBKEY_LEN);
++            return exchange_rsa(a);
++        }
++        SDL_Log("auth: RSA pubkey not found in certificate"); return -1; }
++    case CMD_CLIENT_FINISH: return handle_finish(a, d, len);
++    default: SDL_Log("auth: unknown command 0x%02x", cmd); return -1;
++    }
++}
++
++static int gip_auth_process(gip_auth_t *a, const uint8_t *data, int len) {
++    if (len < (int)sizeof(hdr_hs_t)) return -1;
++    const hdr_hs_t *hs = (const hdr_hs_t *)data;
++    if (hs->error) { SDL_Log("auth: device reported error 0x%02x (cmd 0x%02x)", hs->error, hs->command); a->failed = 1; return -1; }
++    if (hs->options & OPT_ACKNOWLEDGE) {
++        if (hs->command == 0x01) return handle_ack(a);
++        SDL_Log("auth: handshake failed: 0x%02x", hs->command); a->failed = 1; return -1;
++    }
++    if (len < (int)sizeof(hdr_full_t)) return -1;
++    const hdr_full_t *full = (const hdr_full_t *)data;
++    if (full->hs.command != full->data.command) {
++        SDL_Log("auth: protocol upgrade to v2 (hs cmd 0x%02x, data cmd 0x%02x)", full->hs.command, full->data.command);
++        transcript_reset(a); a->v2 = 1;
++        return send_hello2(a);
++    }
++    /* xone hashes a received message after dispatch, but dispatch defers sending (workqueue) for the
++     * cert/pubkey steps, so the received message lands in the transcript before our reply does. The
++     * client-finish check, however, must use the transcript *without* the finish message itself. */
++    uint8_t cmd = full->data.command;
++    int is_finish = (cmd == CMD_CLIENT_FINISH || cmd == CMD2_CLIENT_FINISH);
++    if (!is_finish) transcript_update(a, data + sizeof(hdr_hs_t), len - sizeof(hdr_hs_t));
++    int r = dispatch(a, cmd, data + sizeof(hdr_full_t), len - sizeof(hdr_full_t));
++    if (r) return r;
++    if (is_finish) transcript_update(a, data + sizeof(hdr_hs_t), len - sizeof(hdr_hs_t));
++    (void)rd16;
++    return 0;
++}
++
++static gip_auth_t *gip_auth_new(int (*send)(void *, const uint8_t *, int, int), void *user) {
++    gip_auth_t *a = calloc(1, sizeof *a); a->send = send; a->user = user;
++    transcript_reset(a);
++    return a;
++}
++static void gip_auth_free(gip_auth_t *a) { if (!a) return; free(a); }
++static int gip_auth_start(gip_auth_t *a) { return send_hello(a); }
++static int gip_auth_complete(const gip_auth_t *a) { return a->complete; }
++static const char *gip_auth_state_name(const gip_auth_t *a) { return a->complete ? "complete" : a->failed ? "failed" : "in progress"; }
++
++
++/* ------------------------------------------------------------------------------------------ */
++/* Chunked GIP transport (header varints, fragment reassembly, ACK-driven fragmented sends).   */
++
++#define GIP_CMD_ACK   0x01
++#define GIP_CMD_AUTH  0x06
++#define GIP_OPT_ACK   0x10
++#define GIP_OPT_INTERNAL 0x20
++#define GIP_OPT_CHUNK_START 0x40
++#define GIP_OPT_CHUNK 0x80
++#define GIP_PKT_MAX 58
++
++struct GIP_AuthSession {
++    GIP_WriteFn write; void *user;
++    gip_auth_t *auth;
++    Uint8 seq;
++    int failed;
++    /* rx reassembly */
++    Uint8 rx_cmd; Uint8 *rx_buf; Uint32 rx_total, rx_received;
++    /* chunked tx */
++    int tx_active; Uint8 tx_cmd, tx_opts, tx_seq; Uint8 *tx_data; Uint32 tx_total;
++};
++
++static int gip_decode_varint(const Uint8 *d, int len, Uint32 *val) {
++    int i; *val = 0;
++    for (i = 0; i < 4 && i < len; i++) { *val |= (Uint32)(d[i] & 0x7f) << (7 * i); if (!(d[i] & 0x80)) break; }
++    return i + 1;
++}
++static int gip_encode_varint(Uint8 *b, Uint32 v) { int i; for (i = 0; i < 4; i++) { b[i] = v & 0x7f; v >>= 7; if (v) b[i] |= 0x80; else break; } return i + 1; }
++static int gip_encode_header(Uint8 *b, Uint8 cmd, Uint8 opts, Uint8 sq, Uint32 len, Uint32 chunk_offset) {
++    Uint8 tmp[4]; int n = 0; b[n++] = cmd; b[n++] = opts; b[n++] = sq;
++    n += gip_encode_varint(b + n, len);
++    int actual = n + ((opts & GIP_OPT_CHUNK) ? gip_encode_varint(tmp, chunk_offset) : 0);
++    if (actual % 2) { b[n - 1] |= 0x80; b[n++] = 0; }
++    if (opts & GIP_OPT_CHUNK) n += gip_encode_varint(b + n, chunk_offset);
++    return n;
++}
++static int gip_send_raw(GIP_AuthSession *s, Uint8 cmd, Uint8 opts, Uint8 sq, const Uint8 *data, Uint32 len, Uint32 chunk_offset) {
++    Uint8 pkt[64]; int hl = gip_encode_header(pkt, cmd, opts, sq, len, chunk_offset);
++    if (hl + (int)len > 64) return -1;
++    if (len) memcpy(pkt + hl, data, len);
++    return s->write(s->user, pkt, hl + len);
++}
++static Uint8 gip_next_seq(GIP_AuthSession *s) { Uint8 q = s->seq++; if (s->seq == 0) s->seq = 1; return q; }
++static int gip_send_msg(GIP_AuthSession *s, Uint8 cmd, Uint8 opts, const Uint8 *data, Uint32 len) {
++    Uint8 sq = gip_next_seq(s);
++    if (len <= GIP_PKT_MAX) return gip_send_raw(s, cmd, opts, sq, data, len, 0);
++    free(s->tx_data); s->tx_data = malloc(len); memcpy(s->tx_data, data, len);
++    s->tx_active = 1; s->tx_cmd = cmd; s->tx_opts = opts & ~(GIP_OPT_ACK | GIP_OPT_CHUNK_START); s->tx_seq = sq; s->tx_total = len;
++    return gip_send_raw(s, cmd, opts | GIP_OPT_ACK | GIP_OPT_CHUNK_START | GIP_OPT_CHUNK, sq, data, GIP_PKT_MAX, len);
++}
++static void gip_ack(GIP_AuthSession *s, Uint8 cmd, Uint8 sq, Uint32 received, Uint32 remaining) {
++    Uint8 pkt[13] = { GIP_CMD_ACK, GIP_OPT_INTERNAL, sq, 0x09, 0x00, cmd, GIP_OPT_INTERNAL,
++                      (Uint8)received, (Uint8)(received >> 8), 0, 0, (Uint8)remaining, (Uint8)(remaining >> 8) };
++    s->write(s->user, pkt, sizeof pkt);
++}
++static int gip_auth_transport_send(void *user, const uint8_t *payload, int len, int need_ack) {
++    GIP_AuthSession *s = (GIP_AuthSession *)user;
++    return gip_send_msg(s, GIP_CMD_AUTH, GIP_OPT_INTERNAL | (need_ack ? GIP_OPT_ACK : 0), payload, len);
++}
++
++GIP_AuthSession *GIP_Auth_Create(GIP_WriteFn write, void *user) {
++    GIP_AuthSession *s = calloc(1, sizeof *s); if (!s) return NULL;
++    s->write = write; s->user = user; s->seq = 1;
++    s->auth = gip_auth_new(gip_auth_transport_send, s);
++    return s;
++}
++void GIP_Auth_Destroy(GIP_AuthSession *s) { if (!s) return; gip_auth_free(s->auth); free(s->rx_buf); free(s->tx_data); free(s); }
++int GIP_Auth_Start(GIP_AuthSession *s) { return gip_auth_start(s->auth); }
++SDL_bool GIP_Auth_IsComplete(const GIP_AuthSession *s) { return s && gip_auth_complete(s->auth) ? SDL_TRUE : SDL_FALSE; }
++SDL_bool GIP_Auth_HasFailed(const GIP_AuthSession *s) { return s && (s->failed || (s->auth && s->auth->failed)) ? SDL_TRUE : SDL_FALSE; }
++
++SDL_bool GIP_Auth_HandlePacket(GIP_AuthSession *s, const Uint8 *data, int len) {
++    if (!s || len < 4) return SDL_FALSE;
++    Uint8 cmd = data[0], opts = data[1], sq = data[2];
++    if (cmd != GIP_CMD_ACK && cmd != GIP_CMD_AUTH) return SDL_FALSE;
++    Uint32 plen32 = 0, chunk_offset = 0; int p = 3;
++    p += gip_decode_varint(data + p, len - p, &plen32);
++    if (opts & GIP_OPT_CHUNK) p += gip_decode_varint(data + p, len - p, &chunk_offset);
++    const Uint8 *pl = data + p; int plen = len - p; if ((Uint32)plen > plen32) plen = (int)plen32;
++
++    if (cmd == GIP_CMD_ACK) {   /* protocol control ACK: drive our chunked send */
++        if (!s->tx_active || plen < 9 || pl[1] != s->tx_cmd) return SDL_TRUE;
++        Uint32 acked = pl[3] | (pl[4] << 8);
++        if (acked < s->tx_total) {
++            Uint32 remaining = s->tx_total - GIP_PKT_MAX;
++            while (remaining) {
++                Uint32 n = remaining > GIP_PKT_MAX ? GIP_PKT_MAX : remaining;
++                Uint8 o = s->tx_opts | GIP_OPT_CHUNK | (remaining <= GIP_PKT_MAX ? GIP_OPT_ACK : 0);
++                gip_send_raw(s, s->tx_cmd, o, s->tx_seq, s->tx_data + (s->tx_total - remaining), n, s->tx_total - remaining);
++                remaining -= n;
++            }
++        } else {
++            gip_send_raw(s, s->tx_cmd, s->tx_opts | GIP_OPT_CHUNK, s->tx_seq, NULL, 0, s->tx_total);
++            s->tx_active = 0;
++        }
++        return SDL_TRUE;
++    }
++    /* cmd == AUTH */
++    if (opts & GIP_OPT_CHUNK) {
++        if (opts & GIP_OPT_CHUNK_START) { s->rx_cmd = cmd; s->rx_total = chunk_offset; chunk_offset = 0; s->rx_received = 0; free(s->rx_buf); s->rx_buf = calloc(1, s->rx_total + 64); }
++        if (!s->rx_buf) return SDL_TRUE;
++        if (plen32 && chunk_offset + plen <= s->rx_total + 64) { memcpy(s->rx_buf + chunk_offset, pl, plen); s->rx_received = chunk_offset + plen; }
++        if (opts & GIP_OPT_ACK) gip_ack(s, cmd, sq, s->rx_received, s->rx_total > s->rx_received ? s->rx_total - s->rx_received : 0);
++        if (plen32 == 0) {   /* completion fragment */
++            if (gip_auth_process(s->auth, s->rx_buf, s->rx_received)) s->failed = 1;
++            free(s->rx_buf); s->rx_buf = NULL;
++        }
++        return SDL_TRUE;
++    }
++    if (opts & GIP_OPT_ACK) gip_ack(s, cmd, sq, plen32, 0);
++    if (gip_auth_process(s->auth, pl, plen)) s->failed = 1;
++    return SDL_TRUE;
++}
++#endif /* SDL_HIDAPI_GIP_AUTH */
+diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hidapi/SDL_hidapi_gipauth.h build/SDL2-src-x86_64/src/joystick/hidapi/SDL_hidapi_gipauth.h
+--- a/src/joystick/hidapi/SDL_hidapi_gipauth.h	1969-12-31 16:00:00
++++ b/src/joystick/hidapi/SDL_hidapi_gipauth.h	2026-09-07 12:39:43
+@@ -0,0 +1,29 @@
++/*
++  GIP (Xbox One / Gaming Input Protocol) security handshake + chunked message transport for the
++  HIDAPI Xbox One driver. Ported from medusalix/xone (auth/auth.c, bus/protocol.c) to userspace,
++  using Apple CommonCrypto + Security.framework. Some licensed third-party controllers (e.g. Razer
++  Wolverine V3 Pro in Xbox mode) send no input until this handshake completes.
++*/
++#ifndef SDL_hidapi_gipauth_h_
++#define SDL_hidapi_gipauth_h_
++
++#include "../../SDL_internal.h"
++#include "SDL_hidapijoystick_c.h"
++
++#if defined(__MACOSX__) && defined(SDL_JOYSTICK_HIDAPI_XBOXONE)
++#define SDL_HIDAPI_GIP_AUTH 1
++
++typedef int (*GIP_WriteFn)(void *user, const Uint8 *packet, int len);
++typedef struct GIP_AuthSession GIP_AuthSession;
++
++GIP_AuthSession *GIP_Auth_Create(GIP_WriteFn write, void *user);
++void GIP_Auth_Destroy(GIP_AuthSession *s);
++int GIP_Auth_Start(GIP_AuthSession *s);                       /* sends host hello */
++/* Feed every raw packet received from the controller. Returns SDL_TRUE if the packet was consumed
++   (auth 0x06 messages, protocol-control ACKs 0x01 for our chunked sends, fragments). */
++SDL_bool GIP_Auth_HandlePacket(GIP_AuthSession *s, const Uint8 *data, int len);
++SDL_bool GIP_Auth_IsComplete(const GIP_AuthSession *s);
++SDL_bool GIP_Auth_HasFailed(const GIP_AuthSession *s);
++#endif
++
++#endif /* SDL_hidapi_gipauth_h_ */
+diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hidapi/SDL_hidapi_xboxone.c build/SDL2-src-x86_64/src/joystick/hidapi/SDL_hidapi_xboxone.c
+--- a/src/joystick/hidapi/SDL_hidapi_xboxone.c	2025-01-01 07:47:53
++++ b/src/joystick/hidapi/SDL_hidapi_xboxone.c	2026-09-07 12:39:54
+@@ -30,6 +30,7 @@
+ #include "../SDL_sysjoystick.h"
+ #include "SDL_hidapijoystick_c.h"
+ #include "SDL_hidapi_rumble.h"
++#include "SDL_hidapi_gipauth.h"
+ 
+ #ifdef SDL_JOYSTICK_HIDAPI_XBOXONE
+ 
+@@ -40,6 +41,8 @@
+ /*#define DEBUG_XBOX_PROTOCOL*/
+ 
+ #define CONTROLLER_NEGOTIATION_TIMEOUT_MS   300
++#define CONTROLLER_GIP_AUTH_TIMEOUT_MS      4000
++#define SDL_HINT_JOYSTICK_HIDAPI_XBOX_ONE_GIP_AUTH "SDL_JOYSTICK_HIDAPI_XBOX_ONE_GIP_AUTH"
+ #define CONTROLLER_PREPARE_INPUT_TIMEOUT_MS 50
+ 
+ /* Deadzone thresholds */
+@@ -102,6 +105,7 @@
+ {
+     XBOX_ONE_INIT_STATE_START_NEGOTIATING,
+     XBOX_ONE_INIT_STATE_NEGOTIATING,
++    XBOX_ONE_INIT_STATE_GIP_AUTH,
+     XBOX_ONE_INIT_STATE_PREPARE_INPUT,
+     XBOX_ONE_INIT_STATE_COMPLETE,
+ } SDL_XboxOneInitState;
+@@ -139,8 +143,38 @@
+     Uint32 rumble_time;
+     SDL_bool rumble_pending;
+     Uint8 last_state[USB_PACKET_LENGTH];
++#ifdef SDL_HIDAPI_GIP_AUTH
++    GIP_AuthSession *gip_auth;
++    Uint32 gip_auth_start_time;
++#endif
+ } SDL_DriverXboxOne_Context;
+ 
++#ifdef SDL_HIDAPI_GIP_AUTH
++static int GIPAuth_Write(void *user, const Uint8 *packet, int len)
++{
++    SDL_HIDAPI_Device *device = (SDL_HIDAPI_Device *)user;
++    if (SDL_HIDAPI_LockRumble() != 0) {
++        return -1;
++    }
++    return SDL_HIDAPI_SendRumbleAndUnlock(device, packet, len) == len ? 0 : -1;
++}
++
++static SDL_bool GIPAuth_Enabled(SDL_DriverXboxOne_Context *ctx)
++{
++    return !ctx->bluetooth && SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_XBOX_ONE_GIP_AUTH, SDL_TRUE);
++}
++
++static void GIPAuth_Begin(SDL_HIDAPI_Device *device, SDL_DriverXboxOne_Context *ctx)
++{
++    GIP_Auth_Destroy(ctx->gip_auth);
++    ctx->gip_auth = GIP_Auth_Create(GIPAuth_Write, device);
++    ctx->gip_auth_start_time = SDL_GetTicks();
++    if (ctx->gip_auth) {
++        GIP_Auth_Start(ctx->gip_auth);
++    }
++}
++#endif
++
+ static SDL_bool ControllerHasColorLED(Uint16 vendor_id, Uint16 product_id)
+ {
+     return vendor_id == USB_VENDOR_MICROSOFT && product_id == USB_PRODUCT_XBOX_ONE_ELITE_SERIES_2;
+@@ -328,6 +362,14 @@
+         }
+     }
+ 
++#ifdef SDL_HIDAPI_GIP_AUTH
++    if (GIPAuth_Enabled(ctx)) {
++        /* Run the GIP security handshake; some licensed third-party pads stay silent without it. */
++        GIPAuth_Begin(device, ctx);
++        SetInitState(ctx, XBOX_ONE_INIT_STATE_GIP_AUTH);
++        return SDL_TRUE;
++    }
++#endif
+     /* All done with the negotiation, prepare for input! */
+     SetInitState(ctx, XBOX_ONE_INIT_STATE_PREPARE_INPUT);
+ 
+@@ -355,6 +397,10 @@
+ static SDL_bool HIDAPI_DriverXboxOne_IsSupportedDevice(SDL_HIDAPI_Device *device, const char *name, SDL_GameControllerType type, Uint16 vendor_id, Uint16 product_id, Uint16 version, int interface_number, int interface_class, int interface_subclass, int interface_protocol)
+ {
+ #if defined(__MACOSX__) && defined(SDL_JOYSTICK_MFI)
++    if (interface_class == 0xFF) {
++        /* Vendor-class GIP interface enumerated through libusb: not visible to GCController. */
++        return (type == SDL_CONTROLLER_TYPE_XBOXONE) ? SDL_TRUE : SDL_FALSE;
++    }
+     if (!SDL_IsJoystickBluetoothXboxOne(vendor_id, product_id)) {
+         /* On macOS we get a shortened version of the real report and
+            you can't write output reports for wired controllers, so
+@@ -1125,6 +1171,31 @@
+                 }
+             }
+             break;
++#ifdef SDL_HIDAPI_GIP_AUTH
++        case XBOX_ONE_INIT_STATE_GIP_AUTH:
++            if (GIP_Auth_IsComplete(ctx->gip_auth) || GIP_Auth_HasFailed(ctx->gip_auth) ||
++                SDL_TICKS_PASSED(SDL_GetTicks(), ctx->gip_auth_start_time + CONTROLLER_GIP_AUTH_TIMEOUT_MS)) {
++                if (GIP_Auth_IsComplete(ctx->gip_auth)) {
++                    /* Re-issue Set Device State: Start and the LED command now that we are authenticated. */
++                    Uint8 pkt[8];
++                    SDL_memcpy(pkt, xboxone_init0, sizeof(xboxone_init0));
++                    pkt[2] = ctx->sequence++;
++                    GIPAuth_Write(device, pkt, sizeof(xboxone_init0));
++                    SDL_memcpy(pkt, xboxone_init1, sizeof(xboxone_init1));
++                    pkt[2] = ctx->sequence++;
++                    GIPAuth_Write(device, pkt, sizeof(xboxone_init1));
++#ifdef DEBUG_JOYSTICK
++                    SDL_Log("GIP security handshake complete after %u ms\n", (SDL_GetTicks() - ctx->gip_auth_start_time));
++#endif
++                } else {
++                    SDL_Log("GIP security handshake %s after %u ms; continuing without it\n",
++                            GIP_Auth_HasFailed(ctx->gip_auth) ? "failed" : "timed out", (SDL_GetTicks() - ctx->gip_auth_start_time));
++                }
++                ctx->send_time = SDL_GetTicks();
++                SetInitState(ctx, XBOX_ONE_INIT_STATE_PREPARE_INPUT);
++            }
++            break;
++#endif
+         case XBOX_ONE_INIT_STATE_PREPARE_INPUT:
+             if (SDL_TICKS_PASSED(SDL_GetTicks(), ctx->send_time + CONTROLLER_PREPARE_INPUT_TIMEOUT_MS)) {
+ #ifdef DEBUG_JOYSTICK
+@@ -1192,6 +1263,11 @@
+                 break;
+             }
+         } else {
++#ifdef SDL_HIDAPI_GIP_AUTH
++            if (ctx->gip_auth && (data[0] == 0x01 || data[0] == 0x06) && GIP_Auth_HandlePacket(ctx->gip_auth, data, size)) {
++                continue;
++            }
++#endif
+             switch (data[0]) {
+             case 0x01:
+                 /* ACK packet */
+@@ -1222,6 +1298,10 @@
+                     SDL_Log("Controller announce after %u ms\n", (SDL_GetTicks() - ctx->start_time));
+ #endif
+                     SetInitState(ctx, XBOX_ONE_INIT_STATE_START_NEGOTIATING);
++#ifdef SDL_HIDAPI_GIP_AUTH
++                    GIP_Auth_Destroy(ctx->gip_auth);
++                    ctx->gip_auth = NULL;
++#endif
+                 } else {
+                     /* Possibly an announce from a device plugged into the controller */
+                 }
+@@ -1329,6 +1409,13 @@
+ 
+ static void HIDAPI_DriverXboxOne_FreeDevice(SDL_HIDAPI_Device *device)
+ {
++#ifdef SDL_HIDAPI_GIP_AUTH
++    SDL_DriverXboxOne_Context *ctx = (SDL_DriverXboxOne_Context *)device->context;
++    if (ctx) {
++        GIP_Auth_Destroy(ctx->gip_auth);
++        ctx->gip_auth = NULL;
++    }
++#endif
+ }
+ 
+ SDL_HIDAPI_DeviceDriver SDL_HIDAPI_DriverXboxOne = {

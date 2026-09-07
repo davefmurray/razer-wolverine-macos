@@ -1,0 +1,7 @@
+build/
+third_party/*.tar.gz
+third_party/*.tar.bz2
+third_party/SDL2-*/
+third_party/libusb-*/
+*.o
+.DS_Store
