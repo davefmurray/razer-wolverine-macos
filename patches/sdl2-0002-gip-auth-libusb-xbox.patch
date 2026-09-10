@@ -1,7 +1,26 @@
 diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/hidapi/SDL_hidapi.c build/SDL2-src-x86_64/src/hidapi/SDL_hidapi.c
 --- a/src/hidapi/SDL_hidapi.c	2025-08-30 05:47:40
-+++ b/src/hidapi/SDL_hidapi.c	2026-09-07 12:39:25
-@@ -1274,7 +1274,11 @@
++++ b/src/hidapi/SDL_hidapi.c	2026-09-09 21:29:56
+@@ -374,6 +374,18 @@
+         }
+         return;
+     }
++#if defined(HAVE_LIBUSB) && defined(__MACOSX__)
++    {
++        /* Vendor-class USB devices reached through libusb (Xbox GIP pads) generate no IOHID
++           notifications, so keep the periodic rescan alive for hotplug of those. */
++        const Uint32 SDL_HIDAPI_LIBUSB_DETECT_INTERVAL_MS = 3000;
++        Uint32 now = SDL_GetTicks();
++        if (!SDL_HIDAPI_discovery.m_unLastDetect || SDL_TICKS_PASSED(now, SDL_HIDAPI_discovery.m_unLastDetect + SDL_HIDAPI_LIBUSB_DETECT_INTERVAL_MS)) {
++            ++SDL_HIDAPI_discovery.m_unDeviceChangeCounter;
++            SDL_HIDAPI_discovery.m_unLastDetect = now;
++        }
++    }
++#endif
+ 
+ #if defined(__WIN32__) || defined(__WINGDK__)
+ #if 0 /* just let the usual SDL_PumpEvents loop dispatch these, fixing bug 4286. --ryan. */
+@@ -1274,7 +1286,11 @@
  #endif
          for (usb_dev = usb_devs; usb_dev; usb_dev = usb_dev->next) {
              if (use_libusb_whitelist) {
@@ -435,7 +454,7 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
 +#endif /* SDL_hidapi_gipauth_h_ */
 diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hidapi/SDL_hidapi_xboxone.c build/SDL2-src-x86_64/src/joystick/hidapi/SDL_hidapi_xboxone.c
 --- a/src/joystick/hidapi/SDL_hidapi_xboxone.c	2025-01-01 07:47:53
-+++ b/src/joystick/hidapi/SDL_hidapi_xboxone.c	2026-09-07 12:39:54
++++ b/src/joystick/hidapi/SDL_hidapi_xboxone.c	2026-09-09 21:34:57
 @@ -30,6 +30,7 @@
  #include "../SDL_sysjoystick.h"
  #include "SDL_hidapijoystick_c.h"
@@ -461,13 +480,14 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
      XBOX_ONE_INIT_STATE_PREPARE_INPUT,
      XBOX_ONE_INIT_STATE_COMPLETE,
  } SDL_XboxOneInitState;
-@@ -139,8 +143,38 @@
+@@ -139,8 +143,39 @@
      Uint32 rumble_time;
      SDL_bool rumble_pending;
      Uint8 last_state[USB_PACKET_LENGTH];
 +#ifdef SDL_HIDAPI_GIP_AUTH
 +    GIP_AuthSession *gip_auth;
 +    Uint32 gip_auth_start_time;
++    int gip_auth_retries;
 +#endif
  } SDL_DriverXboxOne_Context;
  
@@ -500,7 +520,7 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
  static SDL_bool ControllerHasColorLED(Uint16 vendor_id, Uint16 product_id)
  {
      return vendor_id == USB_VENDOR_MICROSOFT && product_id == USB_PRODUCT_XBOX_ONE_ELITE_SERIES_2;
-@@ -328,6 +362,14 @@
+@@ -328,6 +363,14 @@
          }
      }
  
@@ -515,7 +535,7 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
      /* All done with the negotiation, prepare for input! */
      SetInitState(ctx, XBOX_ONE_INIT_STATE_PREPARE_INPUT);
  
-@@ -355,6 +397,10 @@
+@@ -355,6 +398,10 @@
  static SDL_bool HIDAPI_DriverXboxOne_IsSupportedDevice(SDL_HIDAPI_Device *device, const char *name, SDL_GameControllerType type, Uint16 vendor_id, Uint16 product_id, Uint16 version, int interface_number, int interface_class, int interface_subclass, int interface_protocol)
  {
  #if defined(__MACOSX__) && defined(SDL_JOYSTICK_MFI)
@@ -526,7 +546,22 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
      if (!SDL_IsJoystickBluetoothXboxOne(vendor_id, product_id)) {
          /* On macOS we get a shortened version of the real report and
             you can't write output reports for wired controllers, so
-@@ -1125,6 +1171,31 @@
+@@ -390,7 +437,14 @@
+     ctx->has_share_button = ControllerHasShareButton(ctx->vendor_id, ctx->product_id);
+ 
+     /* Assume that the controller is correctly initialized when we start */
++#ifdef SDL_HIDAPI_GIP_AUTH
++    /* A GIP pad reached through libusb may already be in its Active state (no announce will
++       come) yet still need the security handshake: always negotiate. A later announce simply
++       restarts the sequence. */
++    if (ControllerNeedsNegotiation(ctx) || (!ctx->bluetooth && device->interface_class == 0xFF)) {
++#else
+     if (ControllerNeedsNegotiation(ctx)) {
++#endif
+         ctx->init_state = XBOX_ONE_INIT_STATE_START_NEGOTIATING;
+     } else {
+         ctx->init_state = XBOX_ONE_INIT_STATE_COMPLETE;
+@@ -1125,6 +1179,39 @@
                  }
              }
              break;
@@ -546,6 +581,14 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
 +#ifdef DEBUG_JOYSTICK
 +                    SDL_Log("GIP security handshake complete after %u ms\n", (SDL_GetTicks() - ctx->gip_auth_start_time));
 +#endif
++                } else if (ctx->gip_auth_retries < 2) {
++                    ++ctx->gip_auth_retries;
++                    SDL_Log("GIP security handshake %s after %u ms; retrying (%d)\n",
++                            GIP_Auth_HasFailed(ctx->gip_auth) ? "failed" : "timed out", (SDL_GetTicks() - ctx->gip_auth_start_time), ctx->gip_auth_retries);
++                    GIP_Auth_Destroy(ctx->gip_auth);
++                    ctx->gip_auth = NULL;
++                    SetInitState(ctx, XBOX_ONE_INIT_STATE_START_NEGOTIATING);
++                    break;
 +                } else {
 +                    SDL_Log("GIP security handshake %s after %u ms; continuing without it\n",
 +                            GIP_Auth_HasFailed(ctx->gip_auth) ? "failed" : "timed out", (SDL_GetTicks() - ctx->gip_auth_start_time));
@@ -558,7 +601,7 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
          case XBOX_ONE_INIT_STATE_PREPARE_INPUT:
              if (SDL_TICKS_PASSED(SDL_GetTicks(), ctx->send_time + CONTROLLER_PREPARE_INPUT_TIMEOUT_MS)) {
  #ifdef DEBUG_JOYSTICK
-@@ -1192,6 +1263,11 @@
+@@ -1192,6 +1279,11 @@
                  break;
              }
          } else {
@@ -570,18 +613,25 @@ diff --color -ruN -x *.o -x CMakeFiles third_party/SDL2-2.32.10/src/joystick/hid
              switch (data[0]) {
              case 0x01:
                  /* ACK packet */
-@@ -1222,6 +1298,10 @@
+@@ -1221,6 +1313,17 @@
+ #ifdef DEBUG_JOYSTICK
                      SDL_Log("Controller announce after %u ms\n", (SDL_GetTicks() - ctx->start_time));
  #endif
-                     SetInitState(ctx, XBOX_ONE_INIT_STATE_START_NEGOTIATING);
 +#ifdef SDL_HIDAPI_GIP_AUTH
++                    if (ctx->gip_auth && !GIP_Auth_IsComplete(ctx->gip_auth) && !GIP_Auth_HasFailed(ctx->gip_auth) &&
++                        !SDL_TICKS_PASSED(SDL_GetTicks(), ctx->gip_auth_start_time + 2000)) {
++                        /* A Hello the pad queued before we answered it; the handshake is already running.
++                           Restarting now would desync the security transcript. */
++                        break;
++                    }
 +                    GIP_Auth_Destroy(ctx->gip_auth);
 +                    ctx->gip_auth = NULL;
++                    ctx->gip_auth_retries = 0;
 +#endif
+                     SetInitState(ctx, XBOX_ONE_INIT_STATE_START_NEGOTIATING);
                  } else {
                      /* Possibly an announce from a device plugged into the controller */
-                 }
-@@ -1329,6 +1409,13 @@
+@@ -1329,6 +1432,13 @@
  
  static void HIDAPI_DriverXboxOne_FreeDevice(SDL_HIDAPI_Device *device)
  {

@@ -57,8 +57,10 @@ Re-run the install script whenever Heroic updates the Wine bundle.
 
 ## Quirks
 
-- The controller reboots (~2 s, LEDs off) whenever the last host closes the USB device — plug it in
-  and wait a few seconds before launching a game. Holding the Xbox button powers it off.
+- The controller reboots (~2 s, LEDs off) whenever the last host closes the USB device. Hotplug is
+  handled: plugging in after the game started, or unplugging/replugging mid-game, reconnects within a
+  few seconds (SDL rescans libusb every 3 s, negotiates immediately, and retries the handshake).
+  Holding the Xbox button powers it off.
 - Razer Synapse for Mac publishes phantom "Xbox 360 Controller" HID devices even with no controller
   attached; the registry/env settings above hide them.
 - Back paddles M1–M6 are not exposed in Xbox mode (see NOTES.md for Razer's vendor protocol).

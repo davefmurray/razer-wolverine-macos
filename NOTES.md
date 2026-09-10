@@ -51,7 +51,7 @@ No Wine rebuild, no kernel/DriverKit driver, no SIP change. Fully reversible: `s
 ## Known quirks
 - When the host closes the USB device (game/test exits) macOS unconfigures it and the controller reboots (~2 s, LEDs off, re-enumerates). macOS may pop its "Keyboard Setup Assistant" during that transient. Harmless; plug stays in.
 - Holding the Xbox button powers the controller off. Tap it only.
-- SDL only rescans libusb devices every 3 s and only picks the controller up if it is present and stable at scan time; if it was mid-reboot when the game started, wait a few seconds and restart the game.
+- Hotplug (fixed 2026-09-09): stock SDL never rescans libusb devices on macOS once IOHID notifications exist, and only negotiates after a Hello. Patch adds a 3 s libusb rescan, negotiates immediately on open, ignores a stale Hello queued before our first packet (restarting mid-handshake desynced the transcript → device error 0x05), and retries the handshake twice. Verified: plug-in after start, slow replug and ~1 s replug all reconnect with a completed handshake.
 - Stick rest position is not exactly 0 (e.g. LX ≈ +900 of 32767) — normal for this pad; XInput/Rocket League deadzones absorb it.
 - Paddles M1–M6 are not exposed in Xbox mode (they mirror face buttons unless Razer's diagnostic mode is enabled; see `giptool --query`).
 
