@@ -49,7 +49,23 @@ WINEDEBUG=-all MVK_CONFIG_LOG_LEVEL=1 "$WINE_ROOT/bin/wine" build/xinput_test.ex
 
 Move the sticks, squeeze both triggers, and press buttons. The output should show `slot 0: CONNECTED` followed by changing values. The test executable's exit code alone does not prove input works; inspect its output. Its coverage summary combines all connected slots despite the upstream slot-0 label.
 
-Before installing the adapter, this Wine prefix exposed no connected XInput controller. After installation it reported the Wolverine in slot 0 and completed its GIP handshake. Project Reclaimer was then launched through its normal app, and its own log reported `Controller 1 connected.` Physical stick and button response in the game still needs a user test.
+Before installing the adapter, this Wine prefix exposed no connected XInput controller. After installation it reported the Wolverine in slot 0 and completed its GIP handshake. Project Reclaimer was then launched through its normal app, and its own log reported `Controller 1 connected.`
+
+On October 16, 2026, a receiver test in this prefix recorded 158 changing XInput states. Both sticks moved, both triggers reached 255, and A, B, X, Y, LB, RB, RS, and D-pad Down registered. Three stick axes reached both signed limits. Right-stick Y reached -32768 to 12827 during this test. No disconnect was logged. This verifies physical input in Wine. Response inside the game still needs a user test.
+
+## Use the wireless receiver
+
+The included receiver uses Razer HyperSpeed 2.4 GHz wireless. macOS identified the tested receiver as `Razer Wolverine V3 Pro for Xbox 2.4`, with the same `1532:0a3f` USB identity as the wired controller. The installed adapter handled its input without another patch or repository.
+
+1. Plug the included receiver into the Mac.
+2. Disconnect the USB cable from the controller and turn it on.
+3. Wait for its Chroma lighting. Pulsing white means it is searching for the receiver; blinking white means it is pairing.
+4. Press **Stop** in the browser monitor before launching Project Reclaimer.
+5. Launch Project Reclaimer through its normal app.
+
+The controller prefers the cable when both connections are available. See the [Razer master guide](https://dl.razerzone.com/master-guides/WolverineV3Pro/RazerWolverineV3Pro-en.pdf) for connection and light states. Bluetooth pairing in macOS is not part of this setup.
+
+The monitor reads USB directly and cannot share capture with Wine. To see live plots, close the game and stop any XInput diagnostic before pressing **Start reading** in the monitor. If it completes the handshake but shows no input while you move the controls, reconnect the receiver with the monitor running.
 
 ## Recover and restore
 

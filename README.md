@@ -1,6 +1,6 @@
 # Razer Wolverine for macOS
 
-Userspace USB driver, live input monitor, and Wine/SDL integration for the wired Razer Wolverine V3 Pro.
+Userspace USB driver, live input monitor, and Wine/SDL integration for the Razer Wolverine V3 Pro. Wired input is verified in the monitor. Wireless input through the included 2.4 GHz receiver is verified in Wine's XInput API.
 
 For Project Reclaimer setup, verification, and rollback, see [RECLAIMER.md](RECLAIMER.md).
 
@@ -19,7 +19,7 @@ See [DASHBOARD.md](DASHBOARD.md).
 
 ---
 
-Makes the wired **Razer Wolverine V3 Pro (Xbox mode, USB `1532:0a3f`)** work as a real XInput gamepad
+Makes the **Razer Wolverine V3 Pro (Xbox mode, USB `1532:0a3f`)** work as a real XInput gamepad
 inside Wine on macOS — analog sticks, analog triggers, all buttons — without a kernel extension,
 DriverKit driver, SIP change, or Wine rebuild. Tested with Heroic Games Launcher + Apple Game Porting
 Toolkit Wine and Rocket League (offline / Free Play).

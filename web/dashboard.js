@@ -177,7 +177,7 @@ function panelHTML() {
   return [
     '<article class="panel mode-stopped">',
     '<header class="top"><div><p class="kicker">Wolverine / Input monitor</p>',
-    '<h1>Razer Wolverine V3 Pro</h1><p class="subtitle">Wired USB · 1532:0a3f</p></div>',
+    '<h1>Razer Wolverine V3 Pro</h1><p class="subtitle">USB cable or 2.4 GHz receiver · 1532:0a3f</p></div>',
     '<div class="actions"><p class="chip" data-text="chip" aria-live="polite">Stopped</p>',
     '<button class="start" type="button">Start reading</button><button class="stop" type="button">Stop</button></div></header>',
     '<div class="workspace"><p class="banner" data-text="banner" aria-live="polite"></p>',
