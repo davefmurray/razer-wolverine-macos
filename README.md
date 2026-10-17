@@ -1,4 +1,8 @@
-# Razer Wolverine V3 Pro on macOS (Apple Silicon) → Wine / Rocket League
+# Razer Wolverine for macOS
+
+Userspace USB driver, live input monitor, and Wine/SDL integration for the wired Razer Wolverine V3 Pro.
+
+For Project Reclaimer setup, verification, and rollback, see [RECLAIMER.md](RECLAIMER.md).
 
 ## Local live input dashboard
 
@@ -55,7 +59,7 @@ crypto dependency.
 | `tools/usbinfo.py`, `tools/hidprobe.py` | USB descriptor / HID report probes |
 | `NOTES.md` | Full investigation log: protocol details, packet layouts, quirks, sources |
 
-## Quick start (Heroic + GPTK)
+## Upstream quick start (Heroic + GPTK)
 
 ```bash
 brew install libusb pkgconf cmake mingw-w64
@@ -85,6 +89,8 @@ Re-run the install script whenever Heroic updates the Wine bundle.
 GPL-2.0-or-later (required by the xone-derived handshake code). SDL2 is zlib-licensed, libusb LGPL-2.1.
 
 ## Credits
+
+Based on [Tinerou/wolverine-v3-pro-macos-wine](https://github.com/Tinerou/wolverine-v3-pro-macos-wine). This repository adds the live monitor and Project Reclaimer setup documentation.
 
 Microsoft's public [MS-GIPUSB](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gipusb/) spec,
 [medusalix/xone](https://github.com/medusalix/xone), Linux `xpad`, SDL's `SDL_hidapi_xboxone.c`,

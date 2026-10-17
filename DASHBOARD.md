@@ -2,6 +2,8 @@
 
 Direct USB diagnostic for the wired Razer Wolverine V3 Pro (`1532:0a3f`). The page shows moving stick plots, raw and percentage measurements, trigger levels, button values, and a controller drawing from `build/giptool`. It is not a system-wide HID driver. It does not change Wine, signing, or controller firmware.
 
+The monitor and the Wine adapter need exclusive USB access. Press Stop in the monitor before using the controller in a game. Close the game before starting monitor capture.
+
 The server listens only on `127.0.0.1:8769`. Capture stays stopped until you press Start reading.
 
 ## Run
