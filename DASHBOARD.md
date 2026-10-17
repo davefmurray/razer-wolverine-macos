@@ -41,6 +41,8 @@ On October 16, 2026, the wired controller delivered 2,840 full input reports on 
 
 The automated suite covers capture lifecycle, handshake failure and recovery, input validity, and local HTTP controls. Separate browser fixtures verify all 15 digital button mappings, stick transforms, trigger fill, and no-data or stale states. Fixture data is never sent to the live capture.
 
+If a fresh capture stays at Handshake Starting, unplug and reconnect the USB cable with capture running. This recovered the live input stream during the local test.
+
 Firmware stays blank in a session where the controller does not send a Hello packet. A previous capture reported firmware 1.1.1026.0.
 
 ## License
