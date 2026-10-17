@@ -1,6 +1,6 @@
 # Live input dashboard
 
-Direct USB diagnostic for the wired Razer Wolverine V3 Pro (`1532:0a3f`). The page shows moving stick plots, raw and percentage measurements, trigger levels, button values, and a controller drawing from `build/giptool`. It is not a system-wide HID driver. It does not change Wine, signing, or controller firmware.
+Direct USB diagnostic for the Razer Wolverine V3 Pro (`1532:0a3f`) through its cable or included 2.4 GHz receiver. The page shows moving stick plots, raw and percentage measurements, trigger levels, button values, and a controller drawing from `build/giptool`. It is not a system-wide HID driver. It does not change Wine, signing, or controller firmware.
 
 The monitor and the Wine adapter need exclusive USB access. Press Stop in the monitor before using the controller in a game. Close the game before starting monitor capture.
 
@@ -40,6 +40,10 @@ Frozen panels for the same renderer are at http://127.0.0.1:8769/fixtures.html w
 ## Local verification
 
 On October 16, 2026, the wired controller delivered 2,840 full input reports on macOS 26.3. Both sticks reached −32768 and 32767 on both axes. Both triggers reached 1023. The browser rendered actual trigger activity, and DFM confirmed that the UI works.
+
+A wireless receiver test that day recorded 5,087 input reports. Both sticks reached the full signed range on both axes, and both triggers reached 0..1023. The live browser showed moving sticks and trigger pressure.
+
+After switching readers and reconnecting the receiver, one handshake failed. Stop/Start recovered input after an orphaned Wine controller process was removed. The exact cause of the rejection remains unconfirmed; a permanent protocol fix has not been established. Keep Wine and the monitor from capturing at the same time. If the monitor reports a failed handshake, press **Stop**, then **Start reading**. Idle wireless input can show **Last received** until a control changes.
 
 The automated suite covers capture lifecycle, handshake failure and recovery, input validity, and local HTTP controls. Separate browser fixtures verify all 15 digital button mappings, stick transforms, trigger fill, and no-data or stale states. Fixture data is never sent to the live capture.
 

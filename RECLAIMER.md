@@ -65,7 +65,7 @@ The included receiver uses Razer HyperSpeed 2.4 GHz wireless. macOS identified t
 
 The controller prefers the cable when both connections are available. See the [Razer master guide](https://dl.razerzone.com/master-guides/WolverineV3Pro/RazerWolverineV3Pro-en.pdf) for connection and light states. Bluetooth pairing in macOS is not part of this setup.
 
-The monitor reads USB directly and cannot share capture with Wine. To see live plots, close the game and stop any XInput diagnostic before pressing **Start reading** in the monitor. If it completes the handshake but shows no input while you move the controls, reconnect the receiver with the monitor running.
+The monitor reads USB directly and cannot share capture with Wine. To see live plots, close the game and stop any XInput diagnostic before pressing **Start reading** in the monitor. Wireless monitor input is also verified, with 5,087 reports and full stick and trigger ranges. If the handshake fails after changing readers, press **Stop**, then **Start reading**. A leftover Wine controller process can survive after its parent exits; check for that before running another reader. Do not terminate unrelated Wine applications.
 
 ## Recover and restore
 

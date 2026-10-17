@@ -1,6 +1,6 @@
 # Razer Wolverine for macOS
 
-Userspace USB driver, live input monitor, and Wine/SDL integration for the Razer Wolverine V3 Pro. Wired input is verified in the monitor. Wireless input through the included 2.4 GHz receiver is verified in Wine's XInput API.
+Userspace USB driver, live input monitor, and Wine/SDL integration for the Razer Wolverine V3 Pro. Wired and wireless input through the included 2.4 GHz receiver are verified in the monitor. Wireless input is also verified in Wine's XInput API.
 
 For Project Reclaimer setup, verification, and rollback, see [RECLAIMER.md](RECLAIMER.md).
 
