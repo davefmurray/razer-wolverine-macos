@@ -1,11 +1,12 @@
 # README screenshots
 
-Both images were captured from the working setup on October 16, 2026, on an Apple Silicon M3 Mac running macOS 26.3.
+These images were captured from the working setup on October 16, 2026, on an Apple Silicon M3 Mac running macOS 26.3.
 
 | Image | Source and visible evidence |
 |---|---|
 | [wireless-monitor.png](images/wireless-monitor.png) | Live page at `http://127.0.0.1:8769`, using the physical 2.4 GHz receiver. A is pressed, the left stick is displaced, and RT is 1023. The page shows a completed handshake and 2,807 full input reports. |
 | [macos-usb-receiver.png](images/macos-usb-receiver.png) | Native System Information window with Hardware → USB selected. It lists `Razer Wolverine V3 Pro for Xbox 2.4`, vendor `0x1532`, and product `0x0a3f`. |
+| [project-reclaimer-controller-settings.png](images/project-reclaimer-controller-settings.png) | Native Wine game window, Project Reclaimer - Badger, at Settings → Controller. The game displays `Controller connected` and its default button layout, sensitivity, and dead-zone settings. |
 
 The monitor screenshot uses real controller input. No fixture data, simulated controls, or image generation was used. The USB screenshot establishes hardware detection, not macOS GameController support or in-game compatibility.
 
@@ -28,3 +29,13 @@ Continued movement matters. The receiver can pause reports when controls stop ch
 4. Save the PNG as `docs/images/macos-usb-receiver.png`.
 
 Inspect the selected device and surrounding content before committing the image. Capture the USB pane rather than Hardware Overview, which contains the Mac's serial number and hardware UUID.
+
+## Capture Project Reclaimer settings
+
+1. Stop monitor capture and any XInput diagnostic.
+2. Launch Project Reclaimer and open **Settings → Controller**.
+3. Confirm that **Controller connected** appears.
+4. Press Shift-Command-4, then Space, and click the game window.
+5. Save the PNG as `docs/images/project-reclaimer-controller-settings.png`.
+
+The captured screen includes a pending Communication change. No settings were applied or discarded for the screenshot. Controller detection in this screen does not establish movement or button response during gameplay.

@@ -62,6 +62,10 @@ The adapter does not register a system-wide controller in macOS Game Controllers
 
 Follow [RECLAIMER.md](RECLAIMER.md) to build and install the Wine adapter, verify XInput, and restore the original installation.
 
+![Project Reclaimer controller settings showing Controller connected and the default button layout](docs/images/project-reclaimer-controller-settings.png)
+
+Project Reclaimer settings on macOS, captured October 16, 2026. The game reports **Controller connected** and displays its controller layout, sensitivity, and dead-zone settings. This confirms detection in the game UI; gameplay response remains unverified.
+
 The tested setup uses Wine 11.18 Staging with patched SDL2 2.32.10 and static libusb 1.0.29. Wireless physical input is verified through XInput in the Reclaimer prefix. The game detects a controller; actual movement and button response inside the game remain unverified.
 
 The monitor and the Wine adapter live in this repository because they share the GIP authentication implementation.

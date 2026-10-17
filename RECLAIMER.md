@@ -2,7 +2,11 @@
 
 The Wolverine adapter and the monitor share this repository and the same GIP authentication code. The adapter runs inside Wine through SDL2. It does not install a system-wide macOS HID driver or require a paid Apple Developer membership.
 
-Wireless physical input is verified through Wine XInput. Project Reclaimer logged `Controller 1 connected.`, but movement and button response inside the game still need verification. The [README screenshots](README.md) show the native monitor and macOS USB detection, not in-game input.
+Wireless physical input is verified through Wine XInput. Project Reclaimer logged `Controller 1 connected.` and its controller settings display **Controller connected**. Movement and button response during gameplay still need verification.
+
+![Project Reclaimer controller settings showing the connected controller](docs/images/project-reclaimer-controller-settings.png)
+
+Actual settings screen captured on October 16, 2026. The screenshot establishes controller detection in the game UI.
 
 ## Installed setup
 
