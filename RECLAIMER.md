@@ -2,6 +2,8 @@
 
 The Wolverine adapter and the monitor share this repository and the same GIP authentication code. The adapter runs inside Wine through SDL2. It does not install a system-wide macOS HID driver or require a paid Apple Developer membership.
 
+Wireless physical input is verified through Wine XInput. Project Reclaimer logged `Controller 1 connected.`, but movement and button response inside the game still need verification. The [README screenshots](README.md) show the native monitor and macOS USB detection, not in-game input.
+
 ## Installed setup
 
 The tested installation uses Wine 11.18 Staging on Apple Silicon and Project Reclaimer 0.9.18. Its Intel SDL2 2.32.8 library was replaced with the patched SDL2 2.32.10 library. libusb 1.0.29 is linked statically, and the library uses an ad-hoc local signature.
@@ -18,6 +20,8 @@ export WINEPREFIX="$RECLAIMER_ROOT/prefix-wine"
 
 Run these commands from this repository. Close Project Reclaimer first and press Stop in the monitor.
 
+Building requires Apple's Command Line Tools and Homebrew. The adapter is x86_64; Apple Silicon Macs need Rosetta to run the tested Wine runtime. Before changing an existing installation, back up `game/run.sh` and record the current `DisableHidraw`, `Enable SDL`, and `Map Controllers` values under `HKLM\System\CurrentControlSet\Services\WineBus`.
+
 ```bash
 brew install cmake pkgconf mingw-w64
 ./scripts/build-sdl2-libusb.sh
@@ -25,7 +29,7 @@ brew install cmake pkgconf mingw-w64
 ./scripts/wine-registry.sh "$WINEPREFIX" "$WINE_ROOT/bin/wine"
 ```
 
-The installer preserves the original SDL library as `lib/libSDL2-2.0.0.dylib.orig`. The registry helper enables SDL and controller mapping and disables the alternative HID bus to avoid duplicate or phantom controllers.
+The installer preserves the original SDL library as `lib/libSDL2-2.0.0.dylib.orig` on its first run and attempts to apply an ad-hoc local signature. The local installation's signature was verified. The registry helper enables SDL and controller mapping and disables the alternative HID bus to avoid duplicate or phantom controllers. These settings affect the entire Wine prefix.
 
 Add these two exports to Project Reclaimer's `game/run.sh` before it runs Wine. They were added to the local installation during setup.
 
@@ -49,13 +53,15 @@ WINEDEBUG=-all MVK_CONFIG_LOG_LEVEL=1 "$WINE_ROOT/bin/wine" build/xinput_test.ex
 
 Move the sticks, squeeze both triggers, and press buttons. The output should show `slot 0: CONNECTED` followed by changing values. The test executable's exit code alone does not prove input works; inspect its output. Its coverage summary combines all connected slots despite the upstream slot-0 label.
 
+Let the XInput test exit before launching the game. Verify movement, camera input, triggers, and buttons inside Project Reclaimer separately. A connection message alone does not establish those behaviors.
+
 Before installing the adapter, this Wine prefix exposed no connected XInput controller. After installation it reported the Wolverine in slot 0 and completed its GIP handshake. Project Reclaimer was then launched through its normal app, and its own log reported `Controller 1 connected.`
 
 On October 16, 2026, a receiver test in this prefix recorded 158 changing XInput states. Both sticks moved, both triggers reached 255, and A, B, X, Y, LB, RB, RS, and D-pad Down registered. Three stick axes reached both signed limits. Right-stick Y reached -32768 to 12827 during this test. No disconnect was logged. This verifies physical input in Wine. Response inside the game still needs a user test.
 
 ## Use the wireless receiver
 
-The included receiver uses Razer HyperSpeed 2.4 GHz wireless. macOS identified the tested receiver as `Razer Wolverine V3 Pro for Xbox 2.4`, with the same `1532:0a3f` USB identity as the wired controller. The installed adapter handled its input without another patch or repository.
+The included receiver uses Razer HyperSpeed 2.4 GHz wireless. macOS identified the tested receiver as `Razer Wolverine V3 Pro for Xbox 2.4`, with the same `1532:0a3f` USB identity as the wired controller. See the [System Information screenshot](README.md#find-the-receiver-in-macos). The installed adapter handled its input without another patch or repository.
 
 1. Plug the included receiver into the Mac.
 2. Disconnect the USB cable from the controller and turn it on.
@@ -65,11 +71,11 @@ The included receiver uses Razer HyperSpeed 2.4 GHz wireless. macOS identified t
 
 The controller prefers the cable when both connections are available. See the [Razer master guide](https://dl.razerzone.com/master-guides/WolverineV3Pro/RazerWolverineV3Pro-en.pdf) for connection and light states. Bluetooth pairing in macOS is not part of this setup.
 
-The monitor reads USB directly and cannot share capture with Wine. To see live plots, close the game and stop any XInput diagnostic before pressing **Start reading** in the monitor. Wireless monitor input is also verified, with 5,087 reports and full stick and trigger ranges. If the handshake fails after changing readers, press **Stop**, then **Start reading**. A leftover Wine controller process can survive after its parent exits; check for that before running another reader. Do not terminate unrelated Wine applications.
+The monitor reads USB directly and cannot share capture with Wine. To see live plots, close the game and stop any XInput diagnostic before pressing **Start reading** in the monitor. Wireless monitor input is also verified, with 5,087 reports and full stick and trigger ranges. Intermittent native handshake failures remain unresolved. Follow [monitor recovery steps](DASHBOARD.md#recover-capture) if capture fails after switching readers.
 
 ## Recover and restore
 
-If the handshake stalls after switching between the monitor and Wine, unplug and reconnect the controller with the intended reader running. Stop monitor capture before restarting the game. If Project Reclaimer replaces its Wine bundle during an update, rebuild or reinstall the adapter and reapply the launch environment if needed.
+If the handshake stalls after switching between the monitor and Wine, unplug and reconnect the USB cable or receiver with the intended reader running. Stop monitor capture before restarting the game. If Project Reclaimer replaces its Wine bundle during an update, rebuild or reinstall the adapter and reapply the launch environment if needed. Check that the `.orig` backup matches the new Wine version before reusing it for rollback.
 
 To restore the original Wine library after closing the game:
 

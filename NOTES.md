@@ -1,10 +1,33 @@
-# Investigation notes (see README.md for the how-to)
+# Investigation notes
 
-# Razer Wolverine V3 Pro on macOS (Apple Silicon) → Wine/Rocket League — working notes
+Use [README.md](README.md) for the current overview, [DASHBOARD.md](DASHBOARD.md) for the monitor, and [RECLAIMER.md](RECLAIMER.md) for Wine setup and rollback.
 
-Last updated: 2026-09-07
+## Current checkpoint, October 16, 2026
 
-## Controller identification (detected)
+The native monitor and the Wine adapter both accept physical input from the Wolverine V3 Pro's included HyperSpeed 2.4 GHz receiver. The receiver appears in macOS System Information under Hardware → USB as `Razer Wolverine V3 Pro for Xbox 2.4`, with identity `1532:0a3f`. Receiver input uses endpoint `0x84`; output uses `0x05`. The receiver and wired controller share a USB identity, so the name and physical connection matter when identifying a capture.
+
+Local validation on an Apple Silicon M3 Mac with macOS 26.3 recorded:
+
+- Wired native monitor: 2,840 full input reports, all stick axes -32768..32767, and both triggers 0..1023.
+- Wireless native monitor: 5,087 full input reports with the same full stick and trigger ranges.
+- Wireless Wine XInput: slot 0, 158 changing states, both sticks, both triggers 0..255, and buttons. LX, LY, and RX reached both signed limits. RY reached -32768..12827 during that test. No disconnect was logged.
+- Project Reclaimer 0.9.18 on Wine 11.18 Staging: the game logged `Controller 1 connected.` In-game response remains unverified.
+
+The [README screenshots](README.md) show a later live wireless capture and native macOS USB detection. Screenshot provenance and recapture steps are in [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md). Firmware 1.1.1026.0 was reported in an earlier capture; a session without a Hello packet leaves firmware blank.
+
+Native receiver authentication can still fail or stall after reconnecting or switching readers. A scoped orphaned Wine process was removed during diagnosis, but subsequent native attempts also failed. A fresh default capture later succeeded. Another failure occurred during screenshot preparation before live input recovered. The cause remains unconfirmed, and no permanent protocol fix was shipped.
+
+The monitor and Wine require exclusive USB ownership. Their authentication paths have different startup and retry behavior. The experimental `giptool --init sdl` path also mutates its initialization option and can skip authentication on reconnect; it is not the monitor's default. Treat these observations as research leads rather than established causes of the intermittent failure.
+
+## Upstream research history
+
+The following material comes from [Tinerou/wolverine-v3-pro-macos-wine](https://github.com/Tinerou/wolverine-v3-pro-macos-wine). It records the upstream author's September 2026 Heroic and Rocket League environment. Statements such as "already applied," "verified," and "COMPLETE" refer to that environment. Those game results were not re-tested during the October Reclaimer work. Endpoint addresses and firmware below describe the upstream device capture.
+
+Original title: Razer Wolverine V3 Pro on macOS (Apple Silicon) → Wine/Rocket League working notes.
+
+Original last-updated label: 2026-09-07, with a hotplug entry dated 2026-09-09.
+
+### Controller identification (detected)
 - USB: **VID 0x1532 (Razer), PID 0x0A3F** = "Razer Wolverine V3 Pro for Xbox", Xbox mode. Firmware 1.1.770.0 (from GIP Hello).
 - Device class/subclass/protocol **0xFF/0x47/0xD0 = Microsoft GIP** (Xbox One "Gaming Input Protocol"). Not HID. macOS attaches no driver.
 - Configuration 1, two interfaces (both FF/47/D0):
@@ -13,10 +36,10 @@ Last updated: 2026-09-07
 - Other modes (not used): PC mode (Fn+Menu+A) changes PID to 0x0A4C (Xbox 360 protocol per PCGamingWiki/Linux xpad). Holding the Xbox button powers the controller off; it re-enumerates on the next plug.
 - Reproduce: `python3 tools/usbinfo.py` (descriptors + claim test), `ioreg -p IOUSB -w0 | grep -i razer`.
 
-## Razer Synapse for Mac (installed) — red herring
+### Razer Synapse for Mac (installed) — red herring
 - Its DriverKit extension `com.razer.appengine.virtual.driver` publishes a virtual "Xbox 360 Controller" (0x045E:0x028E) and "Razer DriverKit VirtualJoystic" (0x1532:0x27DB) **whether or not a controller is attached**; Synapse for Mac supports no controllers. They never emit data (`tools/hidprobe.py`). Treat as phantom devices to filter out in Wine (`DisableHidraw=1` + `SDL_GAMECONTROLLER_IGNORE_DEVICES`).
 
-## Protocol findings (measured with `build/giptool`)
+### Protocol findings (measured with `build/giptool`)
 - libusb (Homebrew, arm64) can open the device and claim interface 0 as a normal user. No sudo, no kext.
 - Device sends **Hello (0x02)** every 500 ms until the host answers. Metadata request `04 20 seq 00` → 260-byte fragmented response (class `Windows.Xbox.Input.Gamepad`; declares messages 0x20 in (32 bytes), 0x09 out, 0x10 in / 0x0F out (Razer vendor frames)). Fragments are ACKed with `01 20 <seq> 09 00 04 20 <received lo hi> 00 00 <remaining lo hi>`.
 - **The controller sends NO input until the GIP security handshake (command 0x06) completes.** Verified: with the handshake → thousands of 0x20 reports + Guide (0x07) packets; without it (Start/LED/rumble/xpad-style "auth done" only) → nothing, even while operating the controller. Fake `06 20 seq 02 01 00` alone is not accepted.
@@ -25,7 +48,7 @@ Last updated: 2026-09-07
 - Input report 0x20: 36 bytes (4 hdr + 32 payload). Payload: buttons u16 LE (bit1 = keep-alive, ignore; 0x04 Menu 0x08 View 0x10 A 0x20 B 0x40 X 0x80 Y; hi byte 0x01 DU 0x02 DD 0x04 DL 0x08 DR 0x10 LB 0x20 RB 0x40 LS 0x80 RS), LT/RT u16 LE 0..1023, LX/LY/RX/RY s16 LE (−32768..32767, Y up = positive). Bytes 14..31 are zero in normal mode (paddles M1–M6 only appear in Razer "diagnostic mode", see Netruk44/wolverine-v3-pro-linux docs/protocol.md). Guide button: `07 20 seq 02 <down> 5b`, no ACK needed.
 - Razer vendor channel: request `0F ..` / reply `10 ..` 64-byte frames with XOR checksum at byte 0x3E (query class 0/sub 0x84 = diagnostic-mode state works: `giptool --query`).
 
-## Architecture that works
+### Architecture that works
 
 ```
 Wolverine V3 Pro (USB, GIP, if#0 EP 0x81/0x01)
@@ -37,25 +60,25 @@ Rocket League
 ```
 No Wine rebuild, no kernel/DriverKit driver, no SIP change. Fully reversible: `scripts/uninstall-sdl-from-wine.sh`.
 
-## What works (verified 2026-09-07)
+### What works (verified 2026-09-07)
 - `build/giptool` (arm64, libusb + CommonCrypto/Security.framework): handshake + live decoded state. All 14 buttons, Guide, triggers 0..1023, sticks ±32767.
 - `build/sdltest` (x86_64, custom SDL): SDL sees "Razer Wolverine V3 Pro for Xbox" as an Xbox One GameController, 6 axes / 15 buttons, full ranges, triggers analog.
 - `build/xinput_test.exe` under GPTK Wine in the Rocket League prefix: XInput slot 0 connected (type 1 subtype 1); LX/LY/RX/RY reach ±32767, up/right positive; LT/RT analog 0..255 with intermediate values; all 14 XInput buttons (0xF3FF).
 
-## Status: COMPLETE — confirmed working in Rocket League (2026-09-07)
+### Status: COMPLETE — confirmed working in Rocket League (2026-09-07)
 - User confirmation: after signing into Epic once (online launch) the splash advanced and the Wolverine "works perfectly" in-game.
 - End-to-end verified: giptool (native) → patched SDL (x86_64) → winebus SDL bus (is_gamepad=1) → winexinput (XI_00) → xinput1_3 in the Rocket League prefix. XInput slot 0 delivered full analog sticks (±32767), analog triggers (0..255), and all 14 buttons while the game was running.
 - In-game, Rocket League sits on its "Press any button to start" splash — NOT a controller problem: a keyboard cannot pass it either. The game log shows `FEOSManager: OnlineSubsystem is null` / `not logged into EOS`: the splash waits on Epic Online Services sign-in (and the first-run EULA). Fix: launch Heroic online / signed into Epic once so EOS initialises; after that the splash advances and the controller (XInput slot 0) drives the game.
 - Phantom-device cleanup verified: with `DisableHidraw=1` on `HKLM\System\CurrentControlSet\Services\WineBus` plus `SDL_JOYSTICK_MFI=0` and `SDL_GAMECONTROLLER_IGNORE_DEVICES`, XInput shows exactly one slot (the Wolverine). Note `scripts/wine-registry.sh` must run with `WINEESYNC=0 WINEMSYNC=0` when Heroic's wineserver is not running, or with matching values when it is.
 
-## Known quirks
+### Known quirks
 - When the host closes the USB device (game/test exits) macOS unconfigures it and the controller reboots (~2 s, LEDs off, re-enumerates). macOS may pop its "Keyboard Setup Assistant" during that transient. Harmless; plug stays in.
 - Holding the Xbox button powers the controller off. Tap it only.
 - Hotplug (fixed 2026-09-09): stock SDL never rescans libusb devices on macOS once IOHID notifications exist, and only negotiates after a Hello. Patch adds a 3 s libusb rescan, negotiates immediately on open, ignores a stale Hello queued before our first packet (restarting mid-handshake desynced the transcript → device error 0x05), and retries the handshake twice. Verified: plug-in after start, slow replug and ~1 s replug all reconnect with a completed handshake.
 - Stick rest position is not exactly 0 (e.g. LX ≈ +900 of 32767) — normal for this pad; XInput/Rocket League deadzones absorb it.
 - Paddles M1–M6 are not exposed in Xbox mode (they mirror face buttons unless Razer's diagnostic mode is enabled; see `giptool --query`).
 
-## Reproduce the setup
+### Reproduce the setup
 ```bash
 brew install libusb pkgconf cmake mingw-w64        # dev deps
 make                                                # build/giptool (native diagnostic)
@@ -68,7 +91,7 @@ make build/sdltest && SDL_JOYSTICK_MFI=0 ./build/sdltest 60   # SDL-level check 
 ```
 Re-run `install-sdl-into-wine.sh` after Heroic updates/reinstalls the GPTK bundle (it overwrites lib/).
 
-## Heroic configuration (Rocket League, app "Sugar") — already applied to GamesConfig/Sugar.json
+### Heroic configuration (Rocket League, app "Sugar") — already applied to GamesConfig/Sugar.json
 - Wine: Game-Porting-Toolkit-latest (GPTK 1.1 / wine 7.7). Prefix: ~/Games/Heroic/Prefixes/Rocket League.
 - Settings → Advanced → Environment variables:
   - `SDL_JOYSTICK_MFI=0` (hide Razer Synapse's phantom "Xbox 360 Controller" that GCController re-exports)
@@ -78,7 +101,7 @@ Re-run `install-sdl-into-wine.sh` after Heroic updates/reinstalls the GPTK bundl
 - Registry in the prefix: `HKLM\System\CurrentControlSet\Services\WineBus` DisableHidraw=1, Enable SDL=1, Map Controllers=1.
 - To use a different Wine (e.g. Wine-Staging 11.16 for DXMT): install it via Heroic's Wine Manager, then `scripts/install-sdl-into-wine.sh <that bundle>/Contents/Resources/wine` and `scripts/wine-registry.sh <prefix> <that wine64>` — the drop-in only requires the bundle to load `lib/libSDL2-2.0.0.dylib` (check with `otool`/`strings` on its winebus.so).
 
-## Sources borrowed from
+### Sources borrowed from
 - Microsoft MS-GIPUSB open spec (2024-09-16) — packet formats, startup order, ACK rules.
 - medusalix/xone (bus/protocol.c, auth/auth.c, auth/crypto.c) — chunking + security handshake.
 - Linux xpad.c, SDL `SDL_hidapi_xboxone.c` — init packets, report layout.

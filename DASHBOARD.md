@@ -6,9 +6,14 @@ The monitor and the Wine adapter need exclusive USB access. Press Stop in the mo
 
 The server listens only on `127.0.0.1:8769`. Capture stays stopped until you press Start reading.
 
+See the [live wireless screenshot](docs/images/wireless-monitor.png) and [macOS USB screenshot](README.md#find-the-receiver-in-macos). The USB listing proves device detection; the monitor proves that input reaches the reader.
+
 ## Run
 
+You need Apple's Command Line Tools, Python 3, and Homebrew packages `libusb` and `pkgconf`. Run the commands from the repository directory.
+
 ```bash
+brew install libusb pkgconf
 make
 python3 tools/dashboard.py
 ```
@@ -27,7 +32,26 @@ When reports pause but the reader is still running, the last numbers stay and ar
 
 A replug, a stop, a reader error, or a lost browser poll clears live highlights. Replug also clears the current readings until the next full input report.
 
-Stick percentages use 32768 below zero and 32767 at zero and above. Triggers use 1023.
+Stick values range from -32768 to 32767. Positive X points right, and positive Y points up. Stick percentages use 32768 below zero and 32767 at zero and above. Trigger values range from 0 to 1023. The displayed minimum and maximum values describe the current capture.
+
+Digital buttons read 0 when released and 1 when pressed. LT and RT in the button grid show normalized trigger pressure between 0 and 1. M1–M6 do not appear as independent inputs in normal Xbox mode.
+
+Firmware stays blank if the controller does not send a Hello packet during that capture. Blank firmware does not prevent live input.
+
+## Recover capture
+
+If the monitor reports **Controller handshake failed** or remains at **Handshake Starting**:
+
+1. Close the game and any SDL or XInput diagnostic using the controller.
+2. Press **Stop**, then **Start reading**.
+3. If the handshake still stalls, unplug and reconnect the USB cable or receiver with capture running. Keep the wireless controller powered on.
+4. Move a stick and check for increasing input reports. A solid controller light alone does not prove input is reaching the reader.
+
+An idle wireless controller can show **Last received** until a control changes. The monitor removes active button highlights after 400 ms without fresh reports while retaining the last measurements.
+
+If recovery keeps failing, save the **USB activity log** and stop capture before trying another reader. A Wine controller process can survive after a game exits; inspect processes associated with that game's prefix. Do not terminate unrelated Wine applications.
+
+Intermittent native authentication failures remain unresolved. A leftover Wine process was found during one investigation, but failures also occurred after it was removed. Restarting capture has recovered input; that does not establish the failure's cause.
 
 ## Checks
 
@@ -43,13 +67,11 @@ On October 16, 2026, the wired controller delivered 2,840 full input reports on 
 
 A wireless receiver test that day recorded 5,087 input reports. Both sticks reached the full signed range on both axes, and both triggers reached 0..1023. The live browser showed moving sticks and trigger pressure.
 
-After switching readers and reconnecting the receiver, one handshake failed. Stop/Start recovered input after an orphaned Wine controller process was removed. The exact cause of the rejection remains unconfirmed; a permanent protocol fix has not been established. Keep Wine and the monitor from capturing at the same time. If the monitor reports a failed handshake, press **Stop**, then **Start reading**. Idle wireless input can show **Last received** until a control changes.
+A later screenshot session again encountered a handshake failure before a fresh capture succeeded. The [README screenshot](docs/images/wireless-monitor.png) records real wireless input with A pressed, the left stick displaced, and the right trigger at 1023. It shows 2,807 input reports from that separate capture.
 
 The automated suite covers capture lifecycle, handshake failure and recovery, input validity, and local HTTP controls. Separate browser fixtures verify all 15 digital button mappings, stick transforms, trigger fill, and no-data or stale states. Fixture data is never sent to the live capture.
 
-If a fresh capture stays at Handshake Starting, unplug and reconnect the USB cable with capture running. This recovered the live input stream during the local test.
-
-Firmware stays blank in a session where the controller does not send a Hello packet. A previous capture reported firmware 1.1.1026.0.
+A previous capture reported firmware 1.1.1026.0. The screenshot session did not report firmware.
 
 ## License
 
