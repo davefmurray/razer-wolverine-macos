@@ -5,3 +5,5 @@ third_party/SDL2-*/
 third_party/libusb-*/
 *.o
 .DS_Store
+__pycache__/
+*.pyc

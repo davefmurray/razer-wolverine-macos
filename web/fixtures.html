@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wolverine test fixtures</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <header class="fixture-banner">
+    <h1>Test fixtures</h1>
+    <p>Not live controller data. Each panel is one frozen snapshot passed through render. Nothing here polls or invents a stream.</p>
+    <p><a href="/">Back to the live dashboard</a></p>
+  </header>
+  <div id="fixtures"></div>
+  <script src="/dashboard.js"></script>
+  <script>
+    renderFixtures(document.getElementById("fixtures"));
+  </script>
+</body>
+</html>

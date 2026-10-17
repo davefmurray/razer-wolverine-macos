@@ -1,5 +1,20 @@
 # Razer Wolverine V3 Pro on macOS (Apple Silicon) → Wine / Rocket League
 
+## Local live input dashboard
+
+Direct USB diagnostic for this controller. It is not a system-wide HID driver, and it does not change Wine, signing, or controller firmware.
+
+```bash
+make
+python3 tools/dashboard.py
+```
+
+Open http://127.0.0.1:8769 and press Start reading. Double-click `launch.command` to build if needed, start that server once, and open the page. Closing the window stops the server and its capture.
+
+See [DASHBOARD.md](DASHBOARD.md).
+
+---
+
 Makes the wired **Razer Wolverine V3 Pro (Xbox mode, USB `1532:0a3f`)** work as a real XInput gamepad
 inside Wine on macOS — analog sticks, analog triggers, all buttons — without a kernel extension,
 DriverKit driver, SIP change, or Wine rebuild. Tested with Heroic Games Launcher + Apple Game Porting

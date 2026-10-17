@@ -168,13 +168,13 @@ static void gip_ack(libusb_device_handle *h, const gip_hdr_t *in, uint32_t recei
 static const char *btn_names_lo[8] = { "?", "KEEPALIVE", "MENU", "VIEW", "A", "B", "X", "Y" };
 static const char *btn_names_hi[8] = { "DU", "DD", "DL", "DR", "LB", "RB", "LS", "RS" };
 
-static void print_state(const gip_state_t *s) {
+static void print_state(const gip_state_t *s, const char *kind) {
     uint8_t lo = s->buttons & 0xff, hi = s->buttons >> 8;
     if (opt_json) {
-        printf("{\"lx\":%d,\"ly\":%d,\"rx\":%d,\"ry\":%d,\"lt\":%u,\"rt\":%u,"
+        printf("{\"kind\":\"%s\",\"lx\":%d,\"ly\":%d,\"rx\":%d,\"ry\":%d,\"lt\":%u,\"rt\":%u,"
                "\"a\":%d,\"b\":%d,\"x\":%d,\"y\":%d,\"lb\":%d,\"rb\":%d,\"ls\":%d,\"rs\":%d,"
                "\"menu\":%d,\"view\":%d,\"guide\":%d,\"du\":%d,\"dd\":%d,\"dl\":%d,\"dr\":%d}\n",
-               s->lx, s->ly, s->rx, s->ry, s->lt, s->rt,
+               kind, s->lx, s->ly, s->rx, s->ry, s->lt, s->rt,
                !!(lo&0x10), !!(lo&0x20), !!(lo&0x40), !!(lo&0x80),
                !!(hi&0x10), !!(hi&0x20), !!(hi&0x40), !!(hi&0x80),
                !!(lo&0x04), !!(lo&0x08), s->guide,
@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
     int r;
     double t0 = now_s(), t_open = t0, t_last_req = 0;
     int n_input = 0, n_other = 0, meta_retries = 0;
-    if (!opt_json && !opt_raw) print_state(&st);
+    if (!opt_json && !opt_raw) print_state(&st, "input");
 
     while (!stop) {
         double now = now_s();
@@ -407,14 +407,14 @@ int main(int argc, char **argv) {
                 st.rx = (int16_t)(pl[10] | (pl[11] << 8));
                 st.ry = (int16_t)(pl[12] | (pl[13] << 8));
                 if (opt_raw) hexdump("RX input", buf, xfer);
-                print_state(&st);
+                print_state(&st, "input");
                 if (plen > 14 && !opt_json && !opt_raw) hexdump("extra payload bytes", pl + 14, plen - 14);
             }
             break;
         case GIP_CMD_GUIDE:
             if (hd.opts & GIP_OPT_ACK) gip_ack(h, &hd, hd.len, 0);
             st.guide = pl[0] & 0x03;
-            if (opt_raw) hexdump("RX guide", buf, xfer); else print_state(&st);
+            if (opt_raw) hexdump("RX guide", buf, xfer); else print_state(&st, "guide");
             break;
         default:
             n_other++;
